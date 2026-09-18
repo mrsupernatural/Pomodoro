@@ -1,4 +1,4 @@
-import { AppData, DEFAULT_SETTINGS, DEFAULT_TIMER_STATE, TimerSettings, Session, DailyStats, TimerState, ThemeMode } from './types';
+import { AppData, DEFAULT_SETTINGS, DEFAULT_TIMER_STATE, DailyStats } from './types';
 
 const STORAGE_KEY = 'focus_app_data';
 const CURRENT_VERSION = 1;

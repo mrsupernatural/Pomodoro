@@ -1,14 +1,14 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   TimerMode, TimerStatus, ThemeMode, TimerSettings, Session, DailyStats, TimerState, Toast as ToastType,
-  DEFAULT_SETTINGS, DEFAULT_TIMER_STATE, AppData
+  AppData
 } from './types';
 import {
   loadData, saveData, exportData, importData, clearData,
-  getTodayKey, getTodayStats, updateDailyStats, getStreak,
+  getTodayStats, updateDailyStats, getStreak,
   formatTime, formatDuration, formatDurationShort, getDateKey
 } from './store';
-import { Play, Pause, RotateCcw, Sun, Moon, Monitor, BarChart3, Settings, X, Download, Upload, Trash2, Volume2, VolumeX, Bell, BellOff, ChevronLeft, Check } from 'lucide-react';
+import { RotateCcw, Sun, Moon, Monitor, BarChart3, Settings, X, Download, Upload, Trash2, ChevronLeft } from 'lucide-react';
 
 // ==================== TOAST COMPONENT ====================
 function ToastContainer({ toasts, onRemove }: { toasts: ToastType[]; onRemove: (id: string) => void }) {
@@ -90,8 +90,8 @@ function CircularProgress({ progress, mode, size = 280 }: { progress: number; mo
         strokeLinecap="round"
         strokeDasharray={circumference}
         strokeDashoffset={offset}
-        className={`${colors[mode]} transition-all duration-1000 ease-linear`}
-        style={{ transition: 'stroke-dashoffset 0.5s ease-out' }}
+        className={colors[mode]}
+        style={{ transition: 'stroke-dashoffset 0.5s ease-out, stroke 0.3s ease' }}
       />
     </svg>
   );
@@ -122,7 +122,8 @@ export default function App() {
   const [confirmModal, setConfirmModal] = useState<{ open: boolean; title: string; message: string; confirmLabel: string; onConfirm: () => void; danger?: boolean }>({ open: false, title: '', message: '', confirmLabel: '', onConfirm: () => {} });
   const [sessionComplete, setSessionComplete] = useState(false);
   const timerRef = useRef<number | null>(null);
-  const lastTickRef = useRef<number>(0);
+  const lastSaveRef = useRef<number>(0);
+  const sessionHandledRef = useRef<string | null>(null); // Track which session was handled
 
   const { settings, timer, sessions, dailyStats, theme } = data;
   const todayStats = useMemo(() => getTodayStats(dailyStats), [dailyStats]);
@@ -177,11 +178,6 @@ export default function App() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ==================== PERSISTENCE ====================
-  const persistData = useCallback((newData: AppData) => {
-    setData(newData);
-    saveData(newData);
-  }, []);
-
   const updateData = useCallback((updater: (prev: AppData) => AppData) => {
     setData(prev => {
       const next = updater(prev);
@@ -242,17 +238,14 @@ export default function App() {
         };
         
         const newSessions = [...prev.sessions, completedSession];
-        let newDailyStats = prev.dailyStats;
-        if (completedSession.completed) {
-          newDailyStats = updateDailyStats(newDailyStats, prev.timer.mode, prev.timer.totalSeconds);
-        }
+        const newDailyStats = updateDailyStats(prev.dailyStats, prev.timer.mode, prev.timer.totalSeconds);
         
         let newPomodoroCount = prev.timer.pomodoroCount;
         if (prev.timer.mode === 'focus') {
           newPomodoroCount += 1;
         }
         
-        return {
+        const updated = {
           ...prev,
           sessions: newSessions,
           dailyStats: newDailyStats,
@@ -263,22 +256,35 @@ export default function App() {
             pomodoroCount: newPomodoroCount,
           },
         };
+        
+        // Save immediately on completion
+        saveData(updated);
+        return updated;
       }
       
-      return {
+      const updated = {
         ...prev,
         timer: {
           ...prev.timer,
           remainingSeconds: remaining,
         },
       };
+      
+      // Save to localStorage every 5 seconds for persistence
+      const now2 = Date.now();
+      if (now2 - lastSaveRef.current > 5000) {
+        lastSaveRef.current = now2;
+        saveData(updated);
+      }
+      
+      return updated;
     });
   }, []);
 
   // Timer interval
   useEffect(() => {
     if (timer.status === 'running') {
-      lastTickRef.current = Date.now();
+      lastSaveRef.current = Date.now();
       timerRef.current = window.setInterval(tick, 250);
     } else {
       if (timerRef.current) {
@@ -295,7 +301,8 @@ export default function App() {
 
   // Handle timer completion
   useEffect(() => {
-    if (timer.status === 'completed' && !sessionComplete) {
+    if (timer.status === 'completed' && timer.sessionId && sessionHandledRef.current !== timer.sessionId) {
+      sessionHandledRef.current = timer.sessionId;
       setSessionComplete(true);
       
       // Sound
@@ -319,7 +326,7 @@ export default function App() {
         }, 1000);
       }
     }
-  }, [timer.status]);
+  }, [timer.status, timer.sessionId, settings.soundEnabled, settings.notificationsEnabled, settings.autoStartNext, timer.mode]);
 
   // Page title
   useEffect(() => {
@@ -375,11 +382,11 @@ export default function App() {
   const startTimer = useCallback(() => {
     const duration = getDurationForMode(timer.mode, settings);
     const sessionId = generateSessionId();
+    sessionHandledRef.current = null; // Allow completion handler to fire for new session
     updateData(prev => ({
       ...prev,
       timer: {
         ...prev.timer,
-        mode: prev.timer.status === 'completed' ? prev.timer.mode : prev.timer.mode,
         status: 'running',
         remainingSeconds: duration,
         totalSeconds: duration,
@@ -389,7 +396,7 @@ export default function App() {
       },
     }));
     setSessionComplete(false);
-  }, [timer.mode, settings, timer.status]);
+  }, [timer.mode, settings]);
 
   const pauseTimer = useCallback(() => {
     if (timer.status !== 'running' || !timer.startTimestamp) return;
@@ -426,6 +433,7 @@ export default function App() {
       danger: true,
       onConfirm: () => {
         const duration = getDurationForMode(timer.mode, settings);
+        sessionHandledRef.current = null;
         updateData(prev => ({
           ...prev,
           timer: {
@@ -465,6 +473,7 @@ export default function App() {
 
   const doSwitchMode = (mode: TimerMode) => {
     const duration = getDurationForMode(mode, settings);
+    sessionHandledRef.current = null;
     updateData(prev => ({
       ...prev,
       timer: {
@@ -500,6 +509,7 @@ export default function App() {
     
     const duration = getDurationForMode(nextMode, settings);
     const sessionId = generateSessionId();
+    sessionHandledRef.current = null; // Allow completion handler for new session
     
     updateData(prev => ({
       ...prev,
